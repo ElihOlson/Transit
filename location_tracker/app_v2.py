@@ -4,6 +4,7 @@ import folium
 import os
 from datetime import datetime, timedelta, time
 import sqlite3
+from flask import session
 
 # Path to the SQLite database
 base_path = os.path.dirname(__file__)
@@ -46,6 +47,7 @@ final['arrival_datetime'] = pd.to_datetime(final['service_date'] + ' ' + final['
 final['departure_datetime'] = pd.to_datetime(final['service_date'] + ' ' + final['departure_time'], errors='coerce')
 
 app = Flask(__name__)
+app.secret_key = 'your_secret_key'  # Needed for session
 
 @app.after_request
 def add_header(response):
@@ -105,12 +107,21 @@ def map_view():
         longitude = float(request.form.get('longitude') or request.args.get('longitude'))
         selected_route_name = request.form.get('route_name') or request.args.get('route_name')
         show_favorites_only = request.form.get('show_favorites_only') or request.args.get('show_favorites_only')
-        favorite_routes_list = [r for r in (request.form.get('favorite_routes') or request.args.get('favorite_routes') or '').split(',') if r]
-        favorite_stops_list = [s for s in (request.form.get('favorite_stops') or request.args.get('favorite_stops') or '').split(',') if s]
+        show_favorites_only = str(show_favorites_only).strip().lower() in ("1", "true")
 
-        m = folium.Map(location=[latitude, longitude], zoom_start=13)
-        folium.Marker([latitude, longitude], popup='You are here').add_to(m)
+        # Sync favorites into session
+        fav_routes_str = request.form.get('favorite_routes') or request.args.get('favorite_routes')
+        fav_stops_str = request.form.get('favorite_stops') or request.args.get('favorite_stops')
 
+        if fav_routes_str is not None:
+            session['favorite_routes'] = [r.strip() for r in fav_routes_str.split(',') if r.strip()]
+        if fav_stops_str is not None:
+            session['favorite_stops'] = [s.strip() for s in fav_stops_str.split(',') if s.strip()]
+
+        favorite_routes_list = session.get('favorite_routes', [])
+        favorite_stops_list = session.get('favorite_stops', [])
+
+        # ✅ Load DB tables first so trips_routes exists
         stops_df = load_table('stops')
         routes_df = load_table('routes')
         stop_times_df = load_table('stop_times')
@@ -121,21 +132,59 @@ def map_view():
             shapes_df = pd.DataFrame()
 
         trips_routes = trips_df.merge(routes_df, on='route_id', how='left')
-        if show_favorites_only:
-            if favorite_routes_list:
-                trips_routes = trips_routes[trips_routes['route_long_name'].isin(favorite_routes_list)]
-            if favorite_stops_list:
-                stops_df = stops_df[stops_df['stop_id'].astype(str).isin(favorite_stops_list)]
+
+        # Now do filtering
+        if show_favorites_only and favorite_routes_list:
+            trips_routes = trips_routes[trips_routes['route_long_name'].isin(favorite_routes_list)]
+            routes_df = routes_df[routes_df['route_long_name'].isin(favorite_routes_list)]
+            stops_df = stops_df[stops_df['stop_id'].astype(str).isin(favorite_stops_list)]
         elif selected_route_name:
             trips_routes = trips_routes[trips_routes['route_long_name'] == selected_route_name]
+            routes_df = routes_df[routes_df['route_long_name'] == selected_route_name]
+            stop_ids_for_selected = stop_times_df[
+                stop_times_df['trip_id'].isin(trips_routes['trip_id'])
+            ]['stop_id'].unique()
+            stops_df = stops_df[stops_df['stop_id'].isin(stop_ids_for_selected)]
+
+        # Create map
+        m = folium.Map(location=[latitude, longitude], zoom_start=13)
+        folium.Marker([latitude, longitude], popup='You are here').add_to(m)
+
+        # --- Strictly filter by favorites if needed ---
+        if show_favorites_only:
+            # Only favorite routes in dropdown and map
+            if favorite_routes_list:
+                routes_df = routes_df[routes_df['route_long_name'].isin(favorite_routes_list)]
+                trips_routes = trips_routes[trips_routes['route_long_name'].isin(favorite_routes_list)]
+                # Show all stops for favorite routes
+                stop_ids_for_fav_routes = stop_times_df[
+                    stop_times_df['trip_id'].isin(trips_routes['trip_id'])
+                ]['stop_id'].unique()
+                stops_df = stops_df[stops_df['stop_id'].isin(stop_ids_for_fav_routes)]
+            else:
+                # No favorites: show nothing
+                routes_df = routes_df.iloc[0:0]
+                trips_routes = trips_routes.iloc[0:0]
+                stops_df = stops_df.iloc[0:0]
+        elif selected_route_name:
+            # Only selected route in dropdown and map
+            routes_df = routes_df[routes_df['route_long_name'] == selected_route_name]
+            trips_routes = trips_routes[trips_routes['route_long_name'] == selected_route_name]
+            stop_ids_for_selected = stop_times_df[
+                stop_times_df['trip_id'].isin(trips_routes['trip_id'])
+            ]['stop_id'].unique()
+            stops_df = stops_df[stops_df['stop_id'].isin(stop_ids_for_selected)]
+        # else: show all
 
         colors = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'lightred', 'beige', 'darkblue', 'darkgreen']
 
-        for idx, route_id in enumerate(trips_routes['route_id'].unique()):
+        # Only loop through filtered routes
+        for idx, route_id in enumerate(routes_df['route_id'].unique()):
             route_info = routes_df[routes_df['route_id'] == route_id].iloc[0]
             route_name = route_info['route_long_name']
             route_color = f"#{route_info['route_color']}" if pd.notna(route_info.get('route_color')) else colors[idx % len(colors)]
 
+            # Draw route path
             for shape_id in trips_routes[trips_routes['route_id'] == route_id]['shape_id'].dropna().unique():
                 shape_points = shapes_df[shapes_df['shape_id'] == shape_id].sort_values('shape_pt_sequence')
                 if len(shape_points) >= 2:
@@ -145,9 +194,12 @@ def map_view():
             stop_ids_for_route = stop_times_df[stop_times_df['trip_id'].isin(trips_df[trips_df['route_id'] == route_id]['trip_id'])]['stop_id'].unique()
 
             for _, stop in stops_df[stops_df['stop_id'].isin(stop_ids_for_route)].iterrows():
+                is_favorited = str(stop['stop_id']) in favorite_stops_list
+                star_color = "#FFD700" if is_favorited else "#888"
+                star_char = "&#9733;" if is_favorited else "&#9734;"
                 popup_html = f"""
                 <div style='display:flex;align-items:center;gap:8px;'>
-                  <span class='stop-star' data-stopid='{stop['stop_id']}' data-stopname='{stop['stop_name']}' style='cursor:pointer;font-size:22px;color:#888;' title='Add to favorites'>&#9734;</span>
+                  <span class='stop-star' data-stopid='{stop['stop_id']}' data-stopname='{stop['stop_name']}' style='cursor:pointer;font-size:22px;color:{star_color};' title='Add to favorites' onclick="toggleFavorite('{stop['stop_id']}', this);">{star_char}</span>
                   <b>{stop['stop_name']}</b>
                 </div>
                 ID: {stop['stop_id']}<br>
@@ -183,16 +235,16 @@ def map_view():
         routes_list = routes_df[['route_long_name']].drop_duplicates().to_dict('records')
 
         average_capacity = get_average_bus_status()
-        # Example: check if a bus is full (replace with your real logic)
         is_full_capacity = True  # <-- change this to your actual check
         upcoming_capacity = get_upcoming_capacity(is_full_capacity)
 
         return render_template(
             "map_display_v2.html",
             map_html=map_html,
-            routes=routes_list,  # <-- pass the processed list
+            routes=routes_list,
             average_capacity=average_capacity,
-            upcoming_capacity=upcoming_capacity
+            upcoming_capacity=upcoming_capacity,
+            show_favorites_only=bool(show_favorites_only)
         )
 
     except Exception as e:
@@ -219,6 +271,24 @@ def forecast_api():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     
+@app.route('/add_favorite_stop', methods=['POST'])
+def add_favorite_stop():
+    stop_id = request.form.get('stop_id')
+    if 'favorite_stops' not in session:
+        session['favorite_stops'] = []
+    if stop_id and stop_id not in session['favorite_stops']:
+        session['favorite_stops'].append(stop_id)
+    session.modified = True
+    return jsonify({'success': True, 'favorite_stops': session['favorite_stops']})
+
+@app.route('/remove_favorite_stop', methods=['POST'])
+def remove_favorite_stop():
+    stop_id = request.form.get('stop_id')
+    if 'favorite_stops' in session and stop_id in session['favorite_stops']:
+        session['favorite_stops'].remove(stop_id)
+    session.modified = True
+    return jsonify({'success': True, 'favorite_stops': session['favorite_stops']})
+
 def get_bus_capacity_status(route_name):
     now = datetime.now().time()
     morning_start = time(6, 30)

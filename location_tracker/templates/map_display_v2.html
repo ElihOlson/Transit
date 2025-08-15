@@ -167,25 +167,26 @@
             });
             updateDropdownStars();
         }
-
         document.getElementById('toggle-favorites-btn').onclick = () => {
             showFavoritesOnly = !showFavoritesOnly;
             renderDropdownItems();
             document.getElementById('show_favorites_only').value = showFavoritesOnly ? '1':'';
             document.getElementById('favorite_routes').value = getFavorites().routes.join(',');
             document.getElementById('favorite_stops').value = getFavorites().stops.map(s=>s.id).join(',');
-            toggleFavStar.innerHTML = showFavoritesOnly?'★':'☆';
-            toggleFavStar.style.color = showFavoritesOnly?'gold':'#888';
-            document.getElementById('toggle-favorites-btn').style.background = showFavoritesOnly?'#ffe066':'#fff';
-            document.getElementById('toggle-favorites-btn').style.borderColor = showFavoritesOnly?'#ffd700':'#ccc';
+            // Make button yellow when active
+            document.getElementById('toggle-fav-star').innerHTML = showFavoritesOnly ? '★' : '☆';
+            document.getElementById('toggle-fav-star').style.color = showFavoritesOnly ? 'gold' : '#888';
+            document.getElementById('toggle-favorites-btn').style.background = showFavoritesOnly ? '#ffe066' : '#fff';
+            document.getElementById('toggle-favorites-btn').style.borderColor = showFavoritesOnly ? '#ffd700' : '#ccc';
             document.getElementById('route-form').submit();
         };
 
+        // On page load, set button color if favorites mode is active
         (function() {
             if(document.getElementById('show_favorites_only').value==='1') {
                 showFavoritesOnly=true;
-                toggleFavStar.innerHTML='★';
-                toggleFavStar.style.color='gold';
+                document.getElementById('toggle-fav-star').innerHTML='★';
+                document.getElementById('toggle-fav-star').style.color='gold';
                 document.getElementById('toggle-favorites-btn').style.background='#ffe066';
                 document.getElementById('toggle-favorites-btn').style.borderColor='#ffd700';
             }
@@ -207,18 +208,33 @@
         function isStopFavorite(stopId) { return getFavorites().stops.some(s=>s.id==stopId); }
         function toggleStopFavorite(stopId, stopName) {
             let favs = getFavorites();
-            const idx = favs.stops.findIndex(s=>s.id==stopId);
-            if(idx!=-1) favs.stops.splice(idx,1); else favs.stops.push({id:stopId,name:stopName});
-            setFavorites(favs); updateAllStopStars(); renderFavorites();
-        }
-        function updateAllStopStars() {
-            document.querySelectorAll('.stop-star').forEach(star=>{
-                const stopId=star.getAttribute('data-stopid');
-                if(isStopFavorite(stopId)){ star.innerHTML='★'; star.style.color='gold'; star.title='Remove from favorites'; }
-                else { star.innerHTML='☆'; star.style.color='#888'; star.title='Add to favorites'; }
+            const idx = favs.stops.findIndex(s => s.id == stopId);
+            const isFav = idx !== -1;
+            if (isFav) {
+                favs.stops.splice(idx, 1);
+                fetch('/remove_favorite_stop', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'stop_id=' + encodeURIComponent(stopId)
+                });
+            } else {
+                favs.stops.push({id: stopId, name: stopName});
+                fetch('/add_favorite_stop', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'stop_id=' + encodeURIComponent(stopId)
+                });
+            }
+            setFavorites(favs);
+
+            // Update the star in the popup immediately
+            document.querySelectorAll('.stop-star[data-stopid="' + stopId + '"]').forEach(star => {
+                star.textContent = isFav ? '☆' : '★';
+                star.style.color = isFav ? '#888' : '#FFD700';
             });
         }
 
+        // Listen for clicks on stop stars (works for popups)
         document.body.addEventListener('pointerdown', function(e){
             if(e.target.classList.contains('stop-star')){
                 const stopId = e.target.getAttribute('data-stopid');
@@ -239,6 +255,25 @@
         setTimeout(updateAllStopStars,500);
         const observer = new MutationObserver(updateAllStopStars);
         observer.observe(document.body,{childList:true,subtree:true});
+
+        // Ensure popups allow pointer events
+        document.body.addEventListener('popupopen', function(e){
+            setTimeout(updateAllStopStars, 100);
+        });
+
+        function toggleFavorite(stopId, elem) {
+            var url = elem.classList.contains('favorited') ? '/remove_favorite_stop' : '/add_favorite_stop';
+            fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: 'stop_id=' + stopId
+            }).then(res => res.json()).then(data => {
+                if (data.success) {
+                    elem.classList.toggle('favorited');
+                    elem.style.color = elem.classList.contains('favorited') ? '#FFD700' : '#888';
+                }
+            });
+        }
     </script>
 </body>
 </html>
