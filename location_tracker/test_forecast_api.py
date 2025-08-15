@@ -2,14 +2,13 @@
 import app_v2
 
 def test_forecast_api_success(monkeypatch):
-    # Stub out heavy functions so no DB/time dependence
+    # Stub heavy functions so no DB/time dependency
     def fake_forecast(stop_id, route_name, return_only=False):
         assert stop_id == 123 and route_name == "ORBT"
-        # match function signature: return (next_time, capacity_status)
         return ("2025-08-15 07:45:00 AM", "<span style='color:red;'>At Max Capacity</span>")
 
     def fake_capacity(route_name):
-        return "OK"  # simple, predictable output for test
+        return "OK"
 
     monkeypatch.setattr(app_v2, "forecast", fake_forecast)
     monkeypatch.setattr(app_v2, "get_bus_capacity_status", fake_capacity)
