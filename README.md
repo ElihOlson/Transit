@@ -24,3 +24,16 @@ The map is generated using the Folium library and displays location-based transi
 - Parese the mergeed datasets from the Googe Drive historical transit data
 - Focus on specific stop_id and route_paths_name even assigning a 1 for each arrival time 
 - Apply statistical forecasting models to predict upcoming bus arrival times
+
+### **Milestone 4**
+- Implemented bus capacity indicators to inform users of the current capacity status.
+  - Most packed routes: 72nd / Ames Avenue, ORBT, 24th Street, Maple Street, Center Street.
+  - Peak capacity times: 6:30 AM – 8:00 AM and 4:00 PM – 6:00 PM.
+  - If the following bus is at max capacity, the capacity of the next bus will be displayed.
+- Added an overall bus capacity status visible in the main window. Which statuses ranged from:
+  - Available spaces
+  - Limited Space
+- Bus capacity statuses include:
+  - Open Seating
+  - Full, Standing Only
+  - Max Capacity
